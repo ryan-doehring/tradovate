@@ -1,10 +1,12 @@
 name: Tick
 
 on:
-  schedule:
-    # Every 5 minutes (GitHub's practical floor), offset :02 to dodge the top-of-hour
-    # scheduler stampede. Nothing runs before authenticating when the market is closed.
-    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
+  # TEMPORARILY DISABLED: the scheduled run is paused until the bot is fully set up.
+  # Re-enable by uncommenting this block.
+  # schedule:
+  #   # Every 5 minutes (GitHub's practical floor), offset :02 to dodge the top-of-hour
+  #   # scheduler stampede. Nothing runs before authenticating when the market is closed.
+  #   - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
   workflow_dispatch:
     inputs:
       environment:
