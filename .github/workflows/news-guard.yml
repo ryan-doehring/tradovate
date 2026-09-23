@@ -1,0 +1,59 @@
+name: News Guard
+
+on:
+  schedule:
+    # Every 5 minutes during US equity futures session (weekdays, CT)
+    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 7-15 * * 1-5"
+      timezone: America/Chicago
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub Environment (demo or live)
+        required: true
+        default: demo
+        type: choice
+        options:
+          - demo
+          - live
+
+jobs:
+  news-guard:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'demo' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/cache@v4
+        with:
+          path: data
+          key: bot-state-${{ github.ref_name }}
+
+      - name: Install
+        run: pip install .
+
+      - name: Run news guard
+        env:
+          TRADING_MODE: ${{ vars.TRADING_MODE || 'dry_run' }}
+          TRADOVATE_USERNAME: ${{ secrets.TRADOVATE_USERNAME }}
+          TRADOVATE_PASSWORD: ${{ secrets.TRADOVATE_PASSWORD }}
+          TRADOVATE_APP_ID: ${{ secrets.TRADOVATE_APP_ID }}
+          TRADOVATE_CID: ${{ secrets.TRADOVATE_CID }}
+          TRADOVATE_SEC: ${{ secrets.TRADOVATE_SEC }}
+          TRADOVATE_API_URL: ${{ secrets.TRADOVATE_API_URL }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SHEET_TAB: ${{ secrets.GOOGLE_SHEET_TAB }}
+          NEWS_BUFFER_MINUTES: ${{ vars.NEWS_BUFFER_MINUTES || '5' }}
+          NEWS_REOPEN_MINUTES: ${{ vars.NEWS_REOPEN_MINUTES || '30' }}
+          TIMEZONE: America/Chicago
+        run: tradovate-bot news-guard --artifact-dir artifacts
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: news-guard-report
+          path: artifacts/
