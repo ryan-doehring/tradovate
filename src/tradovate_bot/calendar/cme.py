@@ -72,17 +72,33 @@ class MarketCalendar:
         return session.market_close - timedelta(minutes=minutes_before_close)
 
     def is_market_open(self, now: datetime) -> bool:
-        """True when ``now`` falls inside a scheduled CME_Equity session.
+        """True when ``now`` falls inside a CME_Equity session.
 
-        Sessions are keyed by calendar date, so the overnight Globex reopen
-        (17:00 CT) belongs to the *next* day's session. A run before that reopen
-        is reported as market-closed instead of placing orders.
+        Sessions run 17:00 CT -> 16:00 CT, so the overnight reopen belongs to the
+        *next* calendar day's session. Both today and tomorrow are checked, which
+        keeps 03:00 and 19:00 entries working while the 16:00-17:00 maintenance
+        halt (and weekends/holidays) read as closed.
         """
         local_now = now.astimezone(self._tz)
-        session = self.session_for(local_now.date())
-        if session.is_closed:
+        for day in (local_now.date(), local_now.date() + timedelta(days=1)):
+            session = self.session_for(day)
+            if session.is_closed:
+                continue
+            if session.market_open <= local_now < session.market_close:
+                return True
+        return False
+
+    def is_pre_close(self, now: datetime, *, minutes_before_close: int) -> bool:
+        """True from ``minutes_before_close`` until the session close.
+
+        Every tick inside this window re-asserts flat, so a missed run self-heals.
+        """
+        local_now = now.astimezone(self._tz)
+        flat_at = self.eod_flat_time(local_now.date(), minutes_before_close=minutes_before_close)
+        if flat_at is None:
             return False
-        return session.market_open <= local_now < session.market_close
+        session = self.session_for(local_now.date())
+        return flat_at <= local_now < session.market_close
 
     def is_eod_window(self, now: datetime, *, minutes_before_close: int) -> bool:
         local_now = now.astimezone(self._tz)

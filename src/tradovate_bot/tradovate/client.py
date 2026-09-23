@@ -1,9 +1,17 @@
+"""Minimal Tradovate REST client.
+
+Only the free endpoints are used: auth, account/order/position reads and order entry.
+Market data (websocket) is deliberately not touched - see :mod:`tradovate_bot.prices`.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+
+WORKING_STATUSES = {"working", "pending", "suspend"}
 
 
 @dataclass
@@ -35,7 +43,7 @@ class TradovateClient:
         app_id: str,
         cid: int,
         sec: str,
-        app_version: str = "0.1.0",
+        app_version: str = "0.2.0",
     ) -> TradovateAuth:
         payload = {
             "name": username,
@@ -48,7 +56,14 @@ class TradovateClient:
         response = self._client.post("/auth/accesstokenrequest", json=payload)
         response.raise_for_status()
         data = response.json()
-        self._auth = TradovateAuth(access_token=data["accessToken"], user_id=data.get("userId"))
+        token = data.get("accessToken")
+        if not token:
+            reason = data.get("errorText") or data.get("errorCode") or "no accessToken in response"
+            raise RuntimeError(f"Tradovate authentication failed: {reason}")
+        self._auth = TradovateAuth(
+            access_token=token,
+            user_id=data.get("userId"),
+        )
         return self._auth
 
     def _headers(self) -> dict[str, str]:
@@ -64,30 +79,38 @@ class TradovateClient:
         response.raise_for_status()
         return response.json()
 
-    def suggest_contracts(self, text: str) -> list[dict[str, Any]]:
-        data = self.get("/contract/suggest", params={"t": text})
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            return list(data.get("contracts") or data.get("items") or [])
-        return []
-
-    def roll_contract(self, name: str) -> dict[str, Any]:
-        return self.post(
-            "/contract/rollcontract",
-            {"name": name, "forward": True, "ifExpired": True},
-        )
-
     def post(self, path: str, json: dict[str, Any]) -> Any:
         response = self._client.post(path, headers=self._headers(), json=json)
         response.raise_for_status()
         return response.json()
 
+    # --- accounts -------------------------------------------------------------------
+    def get_primary_account(self) -> dict[str, Any]:
+        accounts = self.get("/account/list")
+        if not accounts:
+            raise RuntimeError("No Tradovate accounts found")
+        return accounts[0]
+
+    # --- orders and positions -------------------------------------------------------
+    def list_orders(self) -> list[dict[str, Any]]:
+        data = self.get("/order/list")
+        return data if isinstance(data, list) else []
+
     def list_working_orders(self) -> list[dict[str, Any]]:
-        return self.get("/order/list")
+        return [order for order in self.list_orders() if is_working(order)]
 
     def list_positions(self) -> list[dict[str, Any]]:
-        return self.get("/position/list")
+        data = self.get("/position/list")
+        return data if isinstance(data, list) else []
+
+    def net_positions(self) -> dict[str, int]:
+        net: dict[str, int] = {}
+        for position in self.list_positions():
+            symbol = str(position.get("symbol") or "")
+            qty = int(position.get("netPos") or 0)
+            if symbol and qty:
+                net[symbol] = qty
+        return net
 
     def cancel_order(self, order_id: int) -> dict[str, Any]:
         return self.post("/order/cancelorder", {"orderId": order_id})
@@ -103,42 +126,48 @@ class TradovateClient:
         *,
         account_spec: str,
         account_id: int,
-        trade,
+        symbol: str,
+        action: str,
+        exit_action: str,
+        quantity: int,
+        entry: float,
+        target: float,
+        stop_loss: float,
         custom_tag: str,
-        expire_time: str | None = None,
+        time_in_force: str = "Day",
     ) -> dict[str, Any]:
-        """Place entry limit with TP/SL via OSO (bracket1=TP, bracket2=SL as OCO)."""
-        exit_action = "Sell" if trade.side.tradovate_action == "Buy" else "Buy"
+        """Entry limit with take-profit (bracket1) and stop (bracket2) as an OSO."""
         payload: dict[str, Any] = {
             "accountSpec": account_spec,
             "accountId": account_id,
-            "action": trade.side.tradovate_action,
-            "symbol": trade.tradovate_symbol,
-            "orderQty": trade.quantity,
+            "action": action,
+            "symbol": symbol,
+            "orderQty": quantity,
             "orderType": "Limit",
-            "price": trade.entry,
-            "timeInForce": "GTC",
+            "price": entry,
+            "timeInForce": time_in_force,
             "isAutomated": True,
             "customTag50": custom_tag[:50],
             "bracket1": {
                 "action": exit_action,
                 "orderType": "Limit",
-                "price": trade.target,
-                "timeInForce": "GTC",
+                "price": target,
+                "timeInForce": time_in_force,
             },
             "bracket2": {
                 "action": exit_action,
                 "orderType": "Stop",
-                "stopPrice": trade.stop_loss,
-                "timeInForce": "GTC",
+                "stopPrice": stop_loss,
+                "timeInForce": time_in_force,
             },
         }
-        if expire_time:
-            payload["expireTime"] = expire_time
         return self.post("/order/placeOSO", payload)
 
-    def get_primary_account(self) -> dict[str, Any]:
-        accounts = self.get("/account/list")
-        if not accounts:
-            raise RuntimeError("No Tradovate accounts found")
-        return accounts[0]
+
+def is_working(order: dict[str, Any]) -> bool:
+    status = str(order.get("ordStatus") or "").strip().lower()
+    if not status:
+        # Unknown status: treat as working so we never double-place.
+        return True
+    terminal = {"filled", "cancelled", "canceled", "rejected", "expired"}
+    return status not in terminal

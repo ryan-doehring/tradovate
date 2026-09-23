@@ -33,18 +33,40 @@ class Settings(BaseSettings):
 
     google_service_account_json: str = ""
     google_sheet_id: str = ""
-    google_sheet_tab: str = "VP 2026"
+    google_sheet_tab: str = "VP"
 
     default_contracts: int = 1
-    news_buffer_minutes: int = 5
+    # Used when the Closeness Factor cell is blank or negative.
+    default_closeness_factor: float = 0.0
+
+    # Flat 10 minutes before red news (cron drift tolerance), re-arm 30 minutes after.
+    news_buffer_minutes: int = 10
     news_reopen_minutes: int = 30
-    # Drop a news pause that somehow outlived its event (keeps a bracket from
-    # staying muted forever if a reopen run is missed).
+    # Drop a news pause that somehow outlived its event, so a bracket never stays muted.
     news_pause_ttl_minutes: int = 120
-    eod_minutes_before_close: int = 5
+    # Only scrape the calendar during plausible USD news hours (local time).
+    news_scan_start_hour: int = 5
+    news_scan_end_hour: int = 17
+
+    # Flat + no working orders inside this many minutes of the session close.
+    eod_minutes_before_close: int = 20
     timezone: str = "America/Chicago"
     # Prefer contracts with more than this many days until expiry (roll early).
     min_days_to_expiry: int = 14
+
+    # Price feed: auto | tradovate | sheet | yahoo.
+    price_source: str = "auto"
+    # Optional live-price cell, e.g. "M1" on the sheet tab (user-maintained).
+    sheet_price_cell: str = ""
+    # Optional cell holding the quote timestamp (epoch seconds or ISO) for staleness checks.
+    sheet_price_time_cell: str = ""
+    # Refuse to arm on a quote older than this (fail safe, never guess).
+    max_price_age_minutes: int = 15
+    # Optional symbol overrides, e.g. "ES:ES=F,MES:MES=F".
+    yahoo_price_symbols: str = ""
+
+    tag_prefix: str = "vp"
+    legacy_tag_prefixes: str = "vp2026"
 
     @field_validator("trading_mode", mode="before")
     @classmethod
@@ -60,12 +82,45 @@ class Settings(BaseSettings):
             return 0
         return value
 
+    @field_validator("price_source", mode="before")
+    @classmethod
+    def normalize_price_source(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
     @property
     def writes_enabled(self) -> bool:
         return self.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}
 
+    @property
+    def legacy_prefixes(self) -> tuple[str, ...]:
+        return tuple(part.strip() for part in self.legacy_tag_prefixes.split(",") if part.strip())
+
+    @property
+    def yahoo_symbol_map(self) -> dict[str, str]:
+        overrides: dict[str, str] = {}
+        for pair in self.yahoo_price_symbols.split(","):
+            if ":" not in pair:
+                continue
+            root, symbol = pair.split(":", 1)
+            if root.strip() and symbol.strip():
+                overrides[root.strip().upper()] = symbol.strip()
+        return overrides
+
+    def is_bot_tag(self, tag: str) -> bool:
+        """True for tags this bot owns (current prefix or any legacy prefix)."""
+        if not tag:
+            return False
+        if tag.startswith(f"{self.tag_prefix}:"):
+            return True
+        return bool(self.legacy_prefixes) and tag.startswith(self.legacy_prefixes)
+
+    def is_legacy_tag(self, tag: str) -> bool:
+        return bool(self.legacy_prefixes) and tag.startswith(self.legacy_prefixes)
+
     def resolve_symbol(self, sheet_ticker: str) -> str:
-        """Normalize sheet ticker to product root (MES). Front-month resolved later."""
+        """Normalize a sheet ticker to a product root (MES). Front month resolved later."""
         return normalize_product_root(sheet_ticker)
 
 

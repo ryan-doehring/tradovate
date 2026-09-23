@@ -1,0 +1,104 @@
+name: Tick
+
+on:
+  schedule:
+    # Every 5 minutes (GitHub's practical floor), offset :02 to dodge the top-of-hour
+    # scheduler stampede. Nothing runs before authenticating when the market is closed.
+    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub Environment (demo or live)
+        required: true
+        default: demo
+        type: choice
+        options:
+          - demo
+          - live
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tradovate-tick-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'demo' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Restore state
+        uses: actions/cache@v4
+        with:
+          path: data
+          # Rolling key so every run can save; restore-keys picks up the newest match.
+          key: bot-state-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            bot-state-${{ github.ref_name }}-
+
+      - name: Install
+        run: pip install .
+
+      - name: Tick
+        env:
+          TRADING_MODE: ${{ vars.TRADING_MODE || 'dry_run' }}
+          TRADOVATE_USERNAME: ${{ secrets.TRADOVATE_USERNAME }}
+          TRADOVATE_PASSWORD: ${{ secrets.TRADOVATE_PASSWORD }}
+          TRADOVATE_APP_ID: ${{ secrets.TRADOVATE_APP_ID }}
+          TRADOVATE_CID: ${{ secrets.TRADOVATE_CID }}
+          TRADOVATE_SEC: ${{ secrets.TRADOVATE_SEC }}
+          TRADOVATE_API_URL: ${{ secrets.TRADOVATE_API_URL }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SHEET_TAB: ${{ vars.GOOGLE_SHEET_TAB || 'VP' }}
+          DEFAULT_CONTRACTS: ${{ vars.DEFAULT_CONTRACTS || '1' }}
+          DEFAULT_CLOSENESS_FACTOR: ${{ vars.DEFAULT_CLOSENESS_FACTOR || '0' }}
+          NEWS_BUFFER_MINUTES: ${{ vars.NEWS_BUFFER_MINUTES || '10' }}
+          NEWS_REOPEN_MINUTES: ${{ vars.NEWS_REOPEN_MINUTES || '30' }}
+          EOD_MINUTES_BEFORE_CLOSE: ${{ vars.EOD_MINUTES_BEFORE_CLOSE || '20' }}
+          PRICE_SOURCE: ${{ vars.PRICE_SOURCE || 'auto' }}
+          SHEET_PRICE_CELL: ${{ vars.SHEET_PRICE_CELL }}
+          SHEET_PRICE_TIME_CELL: ${{ vars.SHEET_PRICE_TIME_CELL }}
+          MAX_PRICE_AGE_MINUTES: ${{ vars.MAX_PRICE_AGE_MINUTES || '15' }}
+          MIN_DAYS_TO_EXPIRY: ${{ vars.MIN_DAYS_TO_EXPIRY || '14' }}
+          TIMEZONE: America/Chicago
+          TAG_PREFIX: vp
+          LEGACY_TAG_PREFIXES: vp2026
+        run: tradovate-bot tick --artifact-dir artifacts
+
+      - name: Heartbeat
+        if: github.event_name == 'schedule'
+        run: |
+          # Public-repo scheduled workflows are disabled after 60 days without a push,
+          # so this records at most one commit per day and keeps the schedule alive.
+          today=$(TZ=America/Chicago date +%F)
+          if [ "$(cat data/heartbeat-date 2>/dev/null || echo '')" = "$today" ]; then
+            echo "heartbeat already recorded for $today"
+            exit 0
+          fi
+          mkdir -p data .bot
+          echo "$today" > data/heartbeat-date
+          echo "$today" >> .bot/heartbeat.txt
+          git config user.name "tradovate-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .bot/heartbeat.txt
+          git commit -m "chore: bot heartbeat ${today} [skip ci]"
+          git push
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tick-report-${{ github.run_number }}
+          path: artifacts/
+          retention-days: 2
+          if-no-files-found: ignore

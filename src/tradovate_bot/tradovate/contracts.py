@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 import httpx
@@ -12,6 +12,23 @@ CME_PRODUCT_IDS: dict[str, int] = {
     "MNQ": 8668,
     "ES": 133,
     "NQ": 146,
+}
+
+# CME tick sizes (in points) used to validate sheet levels/points before ordering.
+# The broker-reported ``tickSize`` wins when available; this is the offline fallback.
+TICK_SIZES: dict[str, float] = {
+    "ES": 0.25,
+    "MES": 0.25,
+    "NQ": 0.25,
+    "MNQ": 0.25,
+    "YM": 1.0,
+    "MYM": 1.0,
+    "RTY": 0.1,
+    "M2K": 0.1,
+    "GC": 0.1,
+    "MGC": 0.1,
+    "CL": 0.01,
+    "MCL": 0.01,
 }
 
 # Futures month codes: F G H J K M N Q U V X Z
@@ -81,7 +98,7 @@ def resolve_active_contract(
             return str(name)
         raise RuntimeError(f"No contracts found for product root {root!r}")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for candidate in candidates:
         name = candidate.get("name")
         maturity_id = candidate.get("contractMaturityId")
@@ -127,6 +144,28 @@ def resolve_trade_symbol(client: SupportsContractLookup | None, sheet_ticker: st
     if client is None:
         return root
     return resolve_active_contract(client, root)
+
+
+def tick_size_for(product_root: str) -> float | None:
+    """Offline fallback tick size for a product root (broker value wins when available)."""
+    return TICK_SIZES.get(normalize_product_root(product_root))
+
+
+def fetch_tick_size(client: SupportsContractLookup, symbol: str) -> float | None:
+    """Broker-reported tick size for a resolved contract symbol, when available."""
+    try:
+        data = client.get("/contract/find", params={"name": symbol})
+    except Exception:  # noqa: BLE001 - tick size is advisory, never block a run
+        return None
+    contract = data
+    if isinstance(data, list):
+        contract = data[0] if data else None
+    if not isinstance(contract, dict):
+        return None
+    try:
+        return float(contract["tickSize"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def try_cme_product_id(product_root: str) -> int | None:

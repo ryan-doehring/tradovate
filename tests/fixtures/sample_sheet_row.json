@@ -1,15 +1,14 @@
 [
-  "2026-07-19T00:00:00",
-  "MES",
-  "Monthly POC",
-  "Short",
+  "9/9/2026",
+  "ES",
+  "Weekly HVN",
+  110,
+  100,
+  105,
+  "Outer",
+  1,
   null,
-  null,
-  7590.0,
-  null,
-  7575.0,
-  7597.5,
-  null,
-  null,
-  null
+  22,
+  11,
+  5
 ]

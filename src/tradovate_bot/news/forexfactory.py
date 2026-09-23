@@ -44,6 +44,31 @@ class NewsEvent:
     def reopen_time(self, reopen_minutes: int = 30) -> datetime:
         return self.event_time + timedelta(minutes=reopen_minutes)
 
+    def to_dict(self) -> dict:
+        return {
+            "event_id": self.event_id,
+            "title": self.title,
+            "currency": self.currency,
+            "impact": self.impact,
+            "event_time": self.event_time.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> NewsEvent | None:
+        try:
+            event_time = datetime.fromisoformat(str(data["event_time"]).replace("Z", "+00:00"))
+        except (KeyError, ValueError):
+            return None
+        if event_time.tzinfo is None:
+            event_time = event_time.replace(tzinfo=ZoneInfo("UTC"))
+        return cls(
+            event_id=str(data.get("event_id") or ""),
+            title=str(data.get("title") or ""),
+            currency=str(data.get("currency") or ""),
+            impact=str(data.get("impact") or ""),
+            event_time=event_time,
+        )
+
 
 def _parse_event_time(day_label: str, time_label: str, tz: ZoneInfo) -> datetime | None:
     time_label = time_label.strip()
@@ -206,6 +231,22 @@ def active_news_window(
         if blackout_start <= now <= reopen_time:
             return event
     return None
+
+
+def in_flat_window(
+    event: NewsEvent,
+    now: datetime,
+    *,
+    buffer_minutes: int,
+    reopen_minutes: int,
+) -> bool:
+    """True from ``buffer`` minutes before the event until ``reopen`` minutes after.
+
+    Everything inside this window is flat: no positions, no working orders.
+    """
+    start = event.event_time - timedelta(minutes=buffer_minutes)
+    end = event.event_time + timedelta(minutes=reopen_minutes)
+    return start <= now <= end
 
 
 def in_blackout(event: NewsEvent, now: datetime, *, buffer_minutes: int) -> bool:
